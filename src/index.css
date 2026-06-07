@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s infinite ease-in-out;
+}
+
+/* Print Stylesheet for flawless "Download as PDF" implementation */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #1c1917 !important;
+    font-size: 11pt !important;
+  }
+
+  /* Hide raw interactive elements when printing/saving PDF */
+  header,
+  #sim-controls-box,
+  #attendance-controller-box,
+  #break-slots-box,
+  #compliance-check-box,
+  #schedule-overview-box,
+  #energy-music-player-card,
+  #ambient-player-card,
+  #devotional-card,
+  #history-head-actions,
+  #notification-banner,
+  #manual-log-creator-box,
+  footer,
+  button,
+  input,
+  select {
+    display: none !important;
+  }
+
+  /* Make sure the printable slate container is isolated and takes full page dimensions */
+  #printable-payroll-compliance-sheet {
+    display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 2.5cm !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Enable high-contrast print colors on modern engines */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
+
+/* Default state for printable container used in live app - invisible until printed */
+#printable-payroll-compliance-sheet {
+  display: none;
+}
+
+
