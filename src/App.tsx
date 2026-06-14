@@ -24,13 +24,37 @@ import {
   ExternalLink,
   Edit2,
   Check,
-  X
+  X,
+  Cloud,
+  CloudOff,
+  CloudLightning,
+  ShieldCheck,
+  LogOut
 } from "lucide-react";
 import AmbientPlayer from "./components/AmbientPlayer";
 import InspirationWidget from "./components/InspirationWidget";
 import DswdRamsLogo from "./components/DswdRamsLogo";
 import { WorkLog } from "./types";
 import { ambientSynth } from "./utils/audio";
+
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+  User as FirebaseUser
+} from "firebase/auth";
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  where
+} from "firebase/firestore";
+import { db, auth } from "./lib/firebase";
+import { handleFirestoreError, OperationType } from "./lib/firebaseUtils";
 
 export default function App() {
   // Real-time state representing actual system clock
@@ -63,7 +87,7 @@ export default function App() {
     checkedAt: null,
   });
 
-  // Time-in records stored in localStorage
+  // Time-in records stored in localStorage & Firebase
   const [logs, setLogs] = useState<WorkLog[]>(() => {
     const saved = localStorage.getItem("ramsworkday_logs");
     if (saved) {
@@ -107,6 +131,113 @@ export default function App() {
     ];
   });
 
+  // Firebase auth & real-time sync states
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<"connecting" | "synced" | "error" | "offline">("offline");
+
+  // Handle Authentication on Mount (Only listen without forcing failed anonymous logins)
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser(user);
+      } else {
+        setCurrentUser(null);
+        setCloudSyncStatus("offline");
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time synchronization subscription
+  useEffect(() => {
+    if (!currentUser) {
+      setCloudSyncStatus("offline");
+      return;
+    }
+
+    setCloudSyncStatus("connecting");
+    const q = query(
+      collection(db, "workLogs"),
+      where("userName", "==", userName)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const cloudLogs: WorkLog[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          cloudLogs.push({
+            date: data.date,
+            dateLabel: data.dateLabel,
+            morningIn: data.morningIn || null,
+            morningOut: data.morningOut || null,
+            afternoonIn: data.afternoonIn || null,
+            afternoonOut: data.afternoonOut || null,
+            morningLateMsg: data.morningLateMsg || undefined,
+            afternoonLateMsg: data.afternoonLateMsg || undefined,
+            isCompleted: !!data.isCompleted,
+          });
+        });
+
+        if (cloudLogs.length === 0 && logs.length > 0) {
+          // Empty cloud, upload what we have locally to back up!
+          logs.forEach(async (localLog) => {
+            try {
+              const docId = `${userName}_${localLog.date}`;
+              await setDoc(doc(db, "workLogs", docId), {
+                ...localLog,
+                userName,
+                updatedAt: new Date().toISOString()
+              });
+            } catch (e) {
+              console.error("Failed to auto-upload local log to Firestore:", e);
+            }
+          });
+        } else if (cloudLogs.length > 0) {
+          // Cloud has precedence, sort and apply
+          cloudLogs.sort((a, b) => b.date.localeCompare(a.date));
+          setLogs(cloudLogs);
+        }
+        setCloudSyncStatus("synced");
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, "workLogs");
+        setCloudSyncStatus("error");
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUser, userName]);
+
+  // Google Authentication Trigger
+  const handleGoogleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      setNotification({
+        text: "Successfully signed in with Google Account! Your logs are fully secured and cloud-synced.",
+        type: "success"
+      });
+      setTimeout(() => setNotification(null), 5000);
+    } catch (err) {
+      console.error("Google sign in failed:", err);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setNotification({
+        text: "Signed out of Google account. Reverted to anonymous guest sync.",
+        type: "info"
+      });
+      setTimeout(() => setNotification(null), 5000);
+    } catch (err) {
+      console.error("Sign out failed:", err);
+    }
+  };
+
   // Keep logs synchronized with localStorage
   useEffect(() => {
     localStorage.setItem("ramsworkday_logs", JSON.stringify(logs));
@@ -132,23 +263,21 @@ export default function App() {
     setEditAfternoonLateMsg(log.afternoonLateMsg || "");
   };
 
-  const handleSaveEdit = (date: string) => {
-    const updated = logs.map(l => {
-      if (l.date === date) {
-        return {
-          ...l,
-          morningIn: editMIn || null,
-          morningOut: editMOut || null,
-          afternoonIn: editAIn || null,
-          afternoonOut: editAOut || null,
-          morningLateMsg: editMorningLateMsg || undefined,
-          afternoonLateMsg: editAfternoonLateMsg || undefined,
-          isCompleted: !!(editMIn && editMOut && editAIn && editAOut)
-        };
-      }
-      return l;
-    });
-    setLogs(updated);
+  const handleSaveEdit = async (date: string) => {
+    const matched = logs.find(l => l.date === date);
+    if (!matched) return;
+    const withUpdates = {
+      ...matched,
+      morningIn: editMIn || null,
+      morningOut: editMOut || null,
+      afternoonIn: editAIn || null,
+      afternoonOut: editAOut || null,
+      morningLateMsg: editMorningLateMsg || undefined,
+      afternoonLateMsg: editAfternoonLateMsg || undefined,
+      isCompleted: !!(editMIn && editMOut && editAIn && editAOut)
+    };
+
+    setLogs(prev => prev.map(l => l.date === date ? withUpdates : l));
     setEditingLogDate(null);
     ambientSynth.playChime("success");
     setNotification({
@@ -156,6 +285,19 @@ export default function App() {
       type: "success"
     });
     setTimeout(() => setNotification(null), 4000);
+
+    if (auth.currentUser) {
+      try {
+        const docId = `${userName}_${date}`;
+        await setDoc(doc(db, "workLogs", docId), {
+          ...withUpdates,
+          userName,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `workLogs/${userName}_${date}`);
+      }
+    }
   };
 
   // Keep live system clock humming
@@ -264,17 +406,17 @@ export default function App() {
   }, [currentRealTime, todayRecord, lastRemindedKey]);
 
   // Update specific field in today's log
-  const saveTodayRecord = (updated: Partial<WorkLog>) => {
+  const saveTodayRecord = async (updated: Partial<WorkLog>) => {
     const existing = logs.find(l => l.date === todayKey);
+    let withUpdates: WorkLog;
     if (existing) {
-      const withUpdates = { ...existing, ...updated };
-      // Check if complete
+      withUpdates = { ...existing, ...updated };
       if (withUpdates.morningIn && withUpdates.morningOut && withUpdates.afternoonIn && withUpdates.afternoonOut) {
         withUpdates.isCompleted = true;
       }
       setLogs(logs.map(l => l.date === todayKey ? withUpdates : l));
     } else {
-      const newRec: WorkLog = {
+      withUpdates = {
         date: todayKey,
         dateLabel: todayLabel,
         morningIn: null,
@@ -284,7 +426,20 @@ export default function App() {
         isCompleted: false,
         ...updated
       };
-      setLogs([newRec, ...logs]);
+      setLogs([withUpdates, ...logs]);
+    }
+
+    if (auth.currentUser) {
+      try {
+        const docId = `${userName}_${withUpdates.date}`;
+        await setDoc(doc(db, "workLogs", docId), {
+          ...withUpdates,
+          userName,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `workLogs/${userName}_${withUpdates.date}`);
+      }
     }
   };
 
@@ -562,10 +717,22 @@ export default function App() {
     }
   };
 
-  const handleClearHistory = () => {
-    if (confirm("Are you sure you want to reset your local clock-in history?")) {
+  const handleClearHistory = async () => {
+    if (confirm("Are you sure you want to reset your local clock-in history? This will also wipe its reference in your synchronized cloud workspace.")) {
+      const logsToDelete = [...logs];
       localStorage.removeItem("ramsworkday_logs");
       setLogs([]);
+
+      if (auth.currentUser) {
+        for (const log of logsToDelete) {
+          try {
+            const docId = `${userName}_${log.date}`;
+            await deleteDoc(doc(db, "workLogs", docId));
+          } catch (e) {
+            console.error("Failed to delete log in bulk reset:", e);
+          }
+        }
+      }
     }
   };
 
@@ -578,7 +745,7 @@ export default function App() {
   const [manualAOut, setManualAOut] = useState("06:00:45 PM");
   const [manualLateMsg, setManualLateMsg] = useState("");
 
-  const handleAddManualLog = (e: React.FormEvent) => {
+  const handleAddManualLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualDate) {
       alert("Please select a calendar date.");
@@ -630,10 +797,23 @@ export default function App() {
       type: "success"
     });
     setTimeout(() => setNotification(null), 5000);
+
+    if (auth.currentUser) {
+      try {
+        const docId = `${userName}_${manualDate}`;
+        await setDoc(doc(db, "workLogs", docId), {
+          ...newLogEntry,
+          userName,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `workLogs/${userName}_${manualDate}`);
+      }
+    }
   };
 
   // Delete a specific entry
-  const handleDeleteLog = (date: string) => {
+  const handleDeleteLog = async (date: string) => {
     setLogs(logs.filter(l => l.date !== date));
     setDeleteConfirmDate(null);
     ambientSynth.playChime("warning");
@@ -642,6 +822,15 @@ export default function App() {
       type: "warning"
     });
     setTimeout(() => setNotification(null), 4000);
+
+    if (auth.currentUser) {
+      try {
+        const docId = `${userName}_${date}`;
+        await deleteDoc(doc(db, "workLogs", docId));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `workLogs/${userName}_${date}`);
+      }
+    }
   };
 
   // Structured CSV Exporter
@@ -708,6 +897,46 @@ export default function App() {
 
           {/* Quick Stats Live Badge */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+            {/* Real-time Cloud Persist Status */}
+            {cloudSyncStatus === "connecting" && (
+              <div className="bg-amber-50/50 p-2 px-3.5 rounded-2xl border border-amber-100 flex items-center gap-2 text-amber-800 whitespace-nowrap" title="Establising safe cloud socket connection to persistent Firestore...">
+                <CloudLightning className="w-4 h-4 text-amber-500 shrink-0 animate-bounce" />
+                <div className="text-left">
+                  <div className="text-[9px] font-bold text-amber-500 uppercase tracking-widest leading-none">Cloud Persist</div>
+                  <div className="text-xs font-semibold">Connecting...</div>
+                </div>
+              </div>
+            )}
+            {cloudSyncStatus === "synced" && (
+              <div className="bg-emerald-50/50 p-2 px-3.5 rounded-2xl border border-emerald-100 flex items-center gap-2 text-emerald-800 whitespace-nowrap" title="Real-time multi-session cloud synchronization fully active!">
+                <Cloud className="w-4 h-4 text-emerald-600 shrink-0 animate-pulse" />
+                <div className="text-left">
+                  <div className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest leading-none">Cloud Persist</div>
+                  <div className="text-xs font-semibold flex items-center gap-1">
+                    Synced <ShieldCheck className="w-3 h-3 text-emerald-600 shrink-0" />
+                  </div>
+                </div>
+              </div>
+            )}
+            {cloudSyncStatus === "error" && (
+              <div className="bg-rose-50 p-2 px-3.5 rounded-2xl border border-rose-100 flex items-center gap-2 text-rose-800 whitespace-nowrap" title="Unable to reach cloud network. Retrying...">
+                <CloudOff className="w-4 h-4 text-rose-500 shrink-0" />
+                <div className="text-left">
+                  <div className="text-[9px] font-bold text-rose-400 uppercase tracking-widest leading-none">Cloud Persist</div>
+                  <div className="text-xs font-semibold">Sync Error</div>
+                </div>
+              </div>
+            )}
+            {cloudSyncStatus === "offline" && (
+              <div className="bg-stone-50 p-2 px-3.5 rounded-2xl border border-stone-200 flex items-center gap-2 text-stone-500 whitespace-nowrap" title="Signed out of persistence. Local backup clock active.">
+                <CloudOff className="w-4 h-4 text-stone-400 shrink-0" />
+                <div className="text-left">
+                  <div className="text-[9px] font-bold text-stone-400 uppercase tracking-widest leading-none">Cloud Persist</div>
+                  <div className="text-xs font-semibold">Offline Mode</div>
+                </div>
+              </div>
+            )}
+
             {/* Profile Info */}
             <div className="bg-stone-50 p-2 px-3.5 rounded-2xl border border-stone-100 flex items-center gap-3">
               <User className="w-4 h-4 text-indigo-600 shrink-0" />
@@ -1059,8 +1288,8 @@ export default function App() {
 
           </div>
 
-          {/* BOX 3: RAMSWORKDAY Shift Integration Compliance Button (col-span-12 md:col-span-4) */}
-          <div id="compliance-check-box" className="col-span-12 md:col-span-4 bg-[#fff1f2] border border-rose-200 rounded-[2rem] p-7 md:p-8 flex flex-col justify-between gap-5 text-center">
+          {/* BOX 3: RAMSWORKDAY Shift Integration Compliance Button (col-span-12 md:col-span-6) */}
+          <div id="compliance-check-box" className="col-span-12 md:col-span-6 bg-[#fff1f2] border border-rose-200 rounded-[2rem] p-7 md:p-8 flex flex-col justify-between gap-5 text-center">
             
             <div className="flex flex-col items-center">
               <div className="p-3 bg-rose-100 text-rose-600 rounded-2xl mb-4 shadow-xs">
@@ -1102,69 +1331,8 @@ export default function App() {
             </button>
           </div>
 
-          {/* BOX 4: Shift Detail Outline & Schedule (col-span-12 md:col-span-4) */}
-          <div id="schedule-overview-box" className="md:col-span-4 bg-indigo-950 text-white rounded-[2rem] p-7 md:p-8 flex flex-col justify-between gap-5 shadow-sm border border-indigo-900">
-            <div>
-              <div className="flex items-center gap-2 mb-3.5">
-                <Calendar className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-[11px] font-bold text-indigo-300 uppercase tracking-widest leading-none">
-                  Weekly Schedule Rules
-                </h3>
-              </div>
-
-              <div className="space-y-3 mt-4">
-                
-                <div className="flex justify-between items-center border-b border-indigo-900 pb-2.5">
-                  <span className="text-xs font-medium text-emerald-400">Shift Days:</span>
-                  <span className="text-xs font-bold text-white bg-indigo-900 px-2 py-0.5 rounded">Monday to Thursday</span>
-                </div>
-
-                <div className="flex justify-between items-center border-b border-indigo-900 pb-2.5">
-                  <span className="text-xs font-medium text-indigo-200">Morning Shift:</span>
-                  <span className="text-xs font-bold text-white font-mono">07:00 AM – 12:00 PM</span>
-                </div>
-
-                <div className="flex justify-between items-center border-b border-indigo-900 pb-2.5">
-                  <span className="text-xs font-medium text-indigo-200">Afternoon Shift:</span>
-                  <span className="text-xs font-bold text-white font-mono">01:00 PM – 06:00 PM</span>
-                </div>
-
-                <div className="p-3 bg-indigo-900/40 rounded-xl border border-indigo-800/50 text-[10px] text-indigo-300 italic leading-relaxed">
-                  * Break times are scheduled outside shift duration (12:00 PM - 01:00 PM lunch is untracked).
-                </div>
-
-              </div>
-            </div>
-
-            <div>
-              <div className="w-full bg-indigo-900 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-emerald-400 h-full transition-all duration-500" 
-                  style={{ 
-                    width: isShiftDay 
-                      ? `${
-                          ((todayRecord.morningIn ? 1 : 0) + 
-                           (todayRecord.morningOut ? 1 : 0) + 
-                           (todayRecord.afternoonIn ? 1 : 0) + 
-                           (todayRecord.afternoonOut ? 1 : 0)) * 25
-                        }%` 
-                      : "0%" 
-                  }} 
-                />
-              </div>
-              <p className="text-[10px] mt-2 text-indigo-300 text-right font-medium">
-                Daily logs completed: {
-                  (todayRecord.morningIn ? 1 : 0) + 
-                  (todayRecord.morningOut ? 1 : 0) + 
-                  (todayRecord.afternoonIn ? 1 : 0) + 
-                  (todayRecord.afternoonOut ? 1 : 0)
-                }/4 steps completed
-              </p>
-            </div>
-          </div>
-
           {/* BOX 5: Officer Profile & Live Settings - No simulation */}
-          <div id="sim-controls-box" className="col-span-12 md:col-span-4 bg-white rounded-[2rem] p-7 md:p-8 shadow-sm border border-stone-200 flex flex-col justify-between gap-5 relative overflow-hidden">
+          <div id="sim-controls-box" className="col-span-12 md:col-span-6 bg-white rounded-[2rem] p-7 md:p-8 shadow-sm border border-stone-200 flex flex-col justify-between gap-5 relative overflow-hidden">
             <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl pointer-events-none" />
             <div>
               <div className="flex justify-between items-center mb-3">
@@ -1242,6 +1410,52 @@ export default function App() {
                 placeholder="Enter workspace name"
                 className="w-1/2 p-1 text-right text-xs bg-transparent focus:underline focus:outline-none font-bold text-indigo-950 placeholder-stone-400 font-display"
               />
+            </div>
+
+            {/* Real-time Google Cloud Sync & Safe storage */}
+            <div className="bg-indigo-50/45 p-4 rounded-xl border border-indigo-100/70 flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                  Cloud Account Vault
+                </span>
+                {!currentUser ? (
+                  <span className="px-2 py-0.5 bg-stone-500/10 text-stone-600 text-[8px] font-black rounded uppercase tracking-wider border border-stone-500/20">Offline Mode</span>
+                ) : (
+                  <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-700 text-[8px] font-black rounded uppercase tracking-wider border border-emerald-500/20">Google Synced</span>
+                )}
+              </div>
+
+              {currentUser ? (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-stone-600 leading-normal">
+                    Secure real-time cloud channel established for:
+                    <div className="font-bold text-indigo-950 truncate mt-0.5">{currentUser.email}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="w-full py-2 bg-stone-200 hover:bg-stone-300 text-stone-700 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors inline-flex justify-center items-center gap-1.5 cursor-pointer border border-stone-300"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Disconnect Google Sync
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[10px] text-stone-500 leading-relaxed">
+                    Prevent loss of logs in incognito modes and sync immediately across different computers using Google Auth.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors inline-flex justify-center items-center gap-2 cursor-pointer shadow-sm hover:shadow-md"
+                  >
+                    <User className="w-3.5 h-3.5" />
+                    Connect Google Account
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

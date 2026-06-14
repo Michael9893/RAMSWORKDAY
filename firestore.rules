@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidWorkLog(data) {
+      return data.keys().hasAll(['date', 'dateLabel', 'isCompleted', 'userName'])
+        && data.date is string && data.date.size() <= 32
+        && data.dateLabel is string && data.dateLabel.size() <= 128
+        && data.isCompleted is bool
+        && data.userName is string && data.userName.size() <= 128
+        && (!('morningIn' in data) || data.morningIn == null || (data.morningIn is string && data.morningIn.size() <= 32))
+        && (!('morningOut' in data) || data.morningOut == null || (data.morningOut is string && data.morningOut.size() <= 32))
+        && (!('afternoonIn' in data) || data.afternoonIn == null || (data.afternoonIn is string && data.afternoonIn.size() <= 32))
+        && (!('afternoonOut' in data) || data.afternoonOut == null || (data.afternoonOut is string && data.afternoonOut.size() <= 32))
+        && (!('morningLateMsg' in data) || data.morningLateMsg == null || (data.morningLateMsg is string && data.morningLateMsg.size() <= 256))
+        && (!('afternoonLateMsg' in data) || data.afternoonLateMsg == null || (data.afternoonLateMsg is string && data.afternoonLateMsg.size() <= 256))
+        && (!('updatedAt' in data) || data.updatedAt is string || data.updatedAt is timestamp);
+    }
+
+    match /workLogs/{logId} {
+      // Allow reading if signed in and checking valid ID
+      allow read: if isSignedIn() && isValidId(logId);
+      
+      // Allow creating if signed in, checking valid ID, and data matches schema
+      allow create: if isSignedIn() && isValidId(logId) && isValidWorkLog(incoming());
+      
+      // Allow updating if signed in, checking valid ID, and data matches schema
+      allow update: if isSignedIn() && isValidId(logId) && isValidWorkLog(incoming());
+      
+      // Allow deleting if signed in
+      allow delete: if isSignedIn() && isValidId(logId);
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "WorkLog": {
+      "title": "WorkLog",
+      "description": "Daily attendance and compliance shift log",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "dateLabel": {
+          "type": "string"
+        },
+        "morningIn": {
+          "type": "string"
+        },
+        "morningOut": {
+          "type": "string"
+        },
+        "afternoonIn": {
+          "type": "string"
+        },
+        "afternoonOut": {
+          "type": "string"
+        },
+        "morningLateMsg": {
+          "type": "string"
+        },
+        "afternoonLateMsg": {
+          "type": "string"
+        },
+        "isCompleted": {
+          "type": "boolean"
+        },
+        "userName": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "date",
+        "dateLabel",
+        "isCompleted",
+        "userName"
+      ]
+    }
+  },
+  "firestore": {
+    "/workLogs/{logId}": {
+      "schema": "WorkLog",
+      "description": "A collection of all attendance logs, queryable by userName to sync across devices"
+    }
+  }
+}
