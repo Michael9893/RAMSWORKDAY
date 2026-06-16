@@ -1,5 +1,5 @@
 {
-  "name": "RAMSWORKDAY Time Tracker",
+  "name": "RAMSWORKDAY TRACKER",
   "description": "A professional workday companion configured for Mon-Thu shifts (7am-12pm & 1pm-6pm). Integrates ambient music, break reminders, motivational quotes, Bible verses, daily prayers, and the RAMSWORKDAY check button.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
